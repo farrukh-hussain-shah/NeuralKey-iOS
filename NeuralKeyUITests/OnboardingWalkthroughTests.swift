@@ -16,10 +16,8 @@ final class OnboardingWalkthroughTests: XCTestCase {
     private let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
     private let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
 
-    /// Set by the CI workflow when an outside recorder needs a moment to start.
-    private var usesExternalRecorder: Bool {
-        ProcessInfo.processInfo.environment["NK_EXTERNAL_RECORDER"] == "1"
-    }
+    /// Must match APP_BUNDLE_ID in Config/Shared.xcconfig. Settings lists the app under it.
+    private let appBundleID = "com.neuralkey.aikeyboard"
 
     override func setUp() {
         super.setUp()
@@ -29,10 +27,19 @@ final class OnboardingWalkthroughTests: XCTestCase {
     // MARK: - The walkthrough
 
     func testFullSetupWalkthrough() {
+        // Warm-up, before the recording starts. The first app launch in a test session takes
+        // 30-40 s on CI and Settings is sluggish on its first run; doing both once here keeps
+        // that dead time out of the video.
+        app.launch()
+        _ = waitForButton("Continue", timeout: 90)
+        app.terminate()
+        settings.launch()
+        _ = settings.buttons["com.apple.settings.general"].waitForExistence(timeout: 30)
+        settings.terminate()
+        pause(1.0)
+
         marker("NK_VIDEO_START")
-        if usesExternalRecorder {
-            pause(2.5)
-        }
+        pause(2.5)
         app.launch()
 
         // Intro pages.
@@ -53,8 +60,8 @@ final class OnboardingWalkthroughTests: XCTestCase {
         _ = waitForButton("Open Settings", timeout: 8)
         pause(1.5)
         tapButton("Open Settings")
-        let keyboardAdded = addKeyboardInSettings()
-        note("keyboard added in Settings: \(keyboardAdded)")
+        let keyboardAdded = enableKeyboardInSettings()
+        note("keyboard switched on in Settings: \(keyboardAdded)")
 
         app.activate()
         pause(1.0)
@@ -140,88 +147,58 @@ final class OnboardingWalkthroughTests: XCTestCase {
         }
 
         marker("NK_VIDEO_END")
-
-        if usesExternalRecorder {
-            probeAppSettingsPage()
-        }
     }
 
     // MARK: - Settings
 
-    // On the iOS 26 Simulator the app's "Open Settings" link lands on the main Settings
-    // list, so the keyboard is added the long way:
-    // General › Keyboard › Keyboards › Add New Keyboard… › Neural Key.
+    // "Open Settings" deep-links to the app's own page, Settings › Apps › Neural Key, which
+    // has a Keyboards row holding both switches. On a slow machine the link takes several
+    // seconds to get there (it passes through the main list and the Apps list), so the test
+    // waits for it and only steps in if it stalls. Touching Settings while the link is still
+    // travelling is what broke the earlier attempts.
 
-    /// Adds Neural Key to the keyboard list. Returns true once it is listed.
-    private func addKeyboardInSettings() -> Bool {
-        guard settings.wait(for: .runningForeground, timeout: 15) else {
+    private var keyboardsRow: XCUIElement { settings.buttons["KEYBOARDS"] }
+    private var keyboardSwitch: XCUIElement {
+        settings.switches.matching(labelContains("Neural Key")).firstMatch
+    }
+    private var fullAccessSwitch: XCUIElement {
+        settings.switches.matching(labelContains("Full Access")).firstMatch
+    }
+
+    /// Settings › Apps › Neural Key › Keyboards › Neural Key switch.
+    private func enableKeyboardInSettings() -> Bool {
+        guard settings.wait(for: .runningForeground, timeout: 20) else {
             note("FAILED Settings did not come to the foreground")
             return false
         }
-        pause(1.0)
-        note("Settings opened on page: \(currentSettingsPage)")
+        guard openKeyboardsPage(isFirstVisit: true) else { return false }
 
-        guard openKeyboardsList() else { return false }
-        if settingsRow(beginsWith("Neural Key"), timeout: 1, scrolling: false) != nil {
-            return true
-        }
-
-        guard let addRow = settingsRow(beginsWith("Add New Keyboard"), timeout: 4, scrolling: true) else {
-            note("FAILED Add New Keyboard row not found")
-            dump("settings (keyboards list)", settings)
+        guard keyboardSwitch.waitForExistence(timeout: 6) else {
+            note("FAILED Neural Key switch not found on the Keyboards page")
+            dump("settings (Keyboards page)", settings)
             return false
         }
-        pause(0.8)
-        addRow.tap()
         pause(1.0)
-
-        guard let neuralKey = settingsRow(beginsWith("Neural Key"), timeout: 5, scrolling: true) else {
-            note("FAILED Neural Key is not offered in the Add New Keyboard list")
-            dump("settings (add new keyboard)", settings)
-            return false
-        }
-        pause(0.8)
-        neuralKey.tap()
-        pause(1.5)
-
-        let listed = settingsRow(beginsWith("Neural Key"), timeout: 4, scrolling: false) != nil
-        if !listed {
-            note("FAILED Neural Key was tapped but is not in the keyboards list afterwards")
-            dump("settings (after adding)", settings)
-        }
-        return listed
+        turnOn(keyboardSwitch)
+        pause(1.2)
+        return isOn(keyboardSwitch)
     }
 
-    /// Keyboards › Neural Key › Allow Full Access, then the system confirmation.
+    /// Same page, Allow Full Access switch, then the system confirmation.
     private func allowFullAccessInSettings() -> Bool {
-        guard settings.wait(for: .runningForeground, timeout: 15) else {
+        guard settings.wait(for: .runningForeground, timeout: 20) else {
             note("FAILED Settings did not come to the foreground (second visit)")
             return false
         }
-        pause(1.0)
-        note("Settings opened on page (second visit): \(currentSettingsPage)")
+        guard openKeyboardsPage(isFirstVisit: false) else { return false }
 
-        guard openKeyboardsList() else { return false }
-        guard let neuralKey = settingsRow(beginsWith("Neural Key"), timeout: 4, scrolling: false) else {
-            note("FAILED Neural Key row not found in the keyboards list")
-            dump("settings (keyboards list, second visit)", settings)
+        guard fullAccessSwitch.waitForExistence(timeout: 6) else {
+            note("FAILED Allow Full Access switch not found on the Keyboards page")
+            dump("settings (Keyboards page, second visit)", settings)
             return false
         }
-        pause(0.8)
-        neuralKey.tap()
         pause(1.0)
-
-        let toggle = firstExisting([
-            settings.switches["Allow Full Access"],
-            settings.switches.matching(labelContains("Full Access")).firstMatch
-        ], timeout: 5)
-        guard let toggle = toggle else {
-            note("FAILED Allow Full Access switch not found")
-            dump("settings (keyboard detail page)", settings)
-            return false
-        }
-        pause(0.8)
-        turnOn(toggle)
+        turnOn(fullAccessSwitch)
 
         if let allow = allowButton(timeout: 5) {
             pause(1.2)
@@ -231,82 +208,87 @@ final class OnboardingWalkthroughTests: XCTestCase {
             dump("settings (after tapping Allow Full Access)", settings)
         }
         pause(1.2)
-        return isOn(toggle)
+        return isOn(fullAccessSwitch)
     }
 
-    /// Walks from wherever Settings is to General › Keyboard › Keyboards.
-    private func openKeyboardsList() -> Bool {
-        let addNew = beginsWith("Add New Keyboard")
-        if settingsRow(addNew, timeout: 1.5, scrolling: false) != nil {
+    /// Ends on the page with the keyboard switches. Waits for the deep link first.
+    private func openKeyboardsPage(isFirstVisit: Bool) -> Bool {
+        // 1. Let the deep link finish. No taps, no swipes. On a return visit Settings is
+        //    already on a page, so give the link a moment to move before looking.
+        if !isFirstVisit {
+            pause(2.5)
+        }
+        let deadline = Date().addingTimeInterval(isFirstVisit ? 30 : 12)
+        var arrived = false
+        while Date() < deadline {
+            if keyboardSwitch.exists || fullAccessSwitch.exists || keyboardsRow.exists {
+                arrived = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        note("Settings deep link reached the app page: \(arrived) (page: \(currentSettingsPage))")
+
+        // 2. If it stalled, walk there: Apps › Neural Key.
+        if !arrived {
+            guard openAppPageManually() else { return false }
+        }
+
+        // 3. Already on the Keyboards page (second visit usually is)?
+        if keyboardSwitch.exists || fullAccessSwitch.exists {
             return true
         }
-
-        if let keyboards = settingsRow(beginsWith("Keyboards"), timeout: 1, scrolling: false) {
-            keyboards.tap()
-        } else {
-            if settingsRow(exactly("Keyboard"), timeout: 1, scrolling: false) == nil {
-                guard let general = settingsRow(exactly("General"), timeout: 4, scrolling: true) else {
-                    note("FAILED General row not found in Settings")
-                    dump("settings (looking for General)", settings)
-                    return false
-                }
-                pause(0.8)
-                general.tap()
-                pause(1.0)
-            }
-            guard let keyboard = settingsRow(exactly("Keyboard"), timeout: 3, scrolling: true) else {
-                note("FAILED Keyboard row not found under General")
-                dump("settings (General page)", settings)
-                return false
-            }
-            pause(0.6)
-            keyboard.tap()
-            pause(1.0)
-            guard let keyboards = settingsRow(beginsWith("Keyboards"), timeout: 5, scrolling: false) else {
-                note("FAILED Keyboards row not found on the Keyboard page")
-                dump("settings (Keyboard page)", settings)
-                return false
-            }
-            pause(0.6)
-            keyboards.tap()
-        }
-        pause(1.0)
-
-        if settingsRow(addNew, timeout: 5, scrolling: true) == nil {
-            note("FAILED keyboards list did not open")
-            dump("settings (expected the keyboards list)", settings)
+        guard keyboardsRow.waitForExistence(timeout: 5) else {
+            note("FAILED Keyboards row not found on the app's Settings page")
+            dump("settings (app page)", settings)
             return false
         }
+        pause(1.2)
+        keyboardsRow.tap()
+        pause(1.0)
         return true
+    }
+
+    private func openAppPageManually() -> Bool {
+        let appRow = settings.buttons[appBundleID]
+        if !appRow.exists {
+            // Not on the Apps list yet: open it from the main list.
+            let appsRow = settings.buttons["com.apple.settings.apps"]
+            if scrollToFind(appsRow) {
+                appsRow.tap()
+                pause(1.0)
+            }
+        }
+        guard scrollToFind(appRow) else {
+            note("FAILED Neural Key not found under Settings › Apps")
+            dump("settings (looking for the app row)", settings)
+            return false
+        }
+        pause(0.6)
+        appRow.tap()
+        pause(1.0)
+        return true
+    }
+
+    /// Looks for a row, scrolling the list back up first and then down.
+    private func scrollToFind(_ element: XCUIElement) -> Bool {
+        if element.exists && element.isHittable { return true }
+        for _ in 0..<4 {
+            settings.swipeDown()
+            pause(0.4)
+            if element.exists && element.isHittable { return true }
+        }
+        for _ in 0..<8 {
+            settings.swipeUp()
+            pause(0.4)
+            if element.exists && element.isHittable { return true }
+        }
+        return false
     }
 
     private var currentSettingsPage: String {
         let bar = settings.navigationBars.firstMatch
         return bar.exists ? bar.identifier : "unknown"
-    }
-
-    /// A tappable row in Settings whose label matches. Rows are buttons on iOS 26, cells or
-    /// plain text on older layouts; navigation-bar titles are deliberately not searched.
-    private func settingsRow(_ predicate: NSPredicate, timeout: TimeInterval, scrolling: Bool) -> XCUIElement? {
-        let candidates = [
-            settings.collectionViews.buttons.matching(predicate).firstMatch,
-            settings.tables.buttons.matching(predicate).firstMatch,
-            settings.cells.matching(predicate).firstMatch,
-            settings.collectionViews.staticTexts.matching(predicate).firstMatch,
-            settings.tables.staticTexts.matching(predicate).firstMatch
-        ]
-        if let found = firstExisting(candidates, timeout: timeout), found.isHittable {
-            return found
-        }
-        guard scrolling else { return nil }
-        for _ in 0..<6 {
-            settings.swipeUp()
-            pause(0.4)
-            if let found = firstExisting(candidates, timeout: 0.4), found.isHittable {
-                return found
-            }
-        }
-        return nil
     }
 
     private func allowButton(timeout: TimeInterval) -> XCUIElement? {
@@ -324,49 +306,14 @@ final class OnboardingWalkthroughTests: XCTestCase {
 
     private func turnOn(_ toggle: XCUIElement) {
         guard !isOn(toggle) else { return }
-        toggle.tap()
+        // Settings rows are wide; the switch itself sits at the trailing edge.
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
         pause(0.8)
-        // A confirmation alert means the tap registered.
         if allowButton(timeout: 0.5) != nil || isOn(toggle) {
             return
         }
-        // Some Settings rows only toggle when the switch itself is tapped.
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        toggle.tap()
         pause(0.8)
-    }
-
-    /// Diagnostic only, run after the recording has stopped: looks at the app's own page in
-    /// Settings (Settings › Apps › Neural Key) and logs what it contains, to settle whether
-    /// that page offers a Keyboards row, which is what the onboarding copy currently says.
-    private func probeAppSettingsPage() {
-        settings.activate()
-        _ = settings.wait(for: .runningForeground, timeout: 10)
-        pause(1.0)
-        // Back out to the main Settings list.
-        for _ in 0..<6 {
-            if settingsRow(exactly("General"), timeout: 0.5, scrolling: false) != nil { break }
-            let back = settings.navigationBars.buttons.firstMatch
-            guard back.exists else { break }
-            back.tap()
-            pause(0.8)
-        }
-        guard let apps = settingsRow(exactly("Apps"), timeout: 2, scrolling: true) else {
-            note("PROBE Apps row not found in Settings")
-            dump("settings probe (main list, scrolled)", settings)
-            return
-        }
-        apps.tap()
-        pause(1.0)
-        guard let appRow = settingsRow(beginsWith("Neural Key"), timeout: 3, scrolling: true) else {
-            note("PROBE Neural Key has no entry under Settings › Apps")
-            dump("settings probe (Apps list)", settings)
-            return
-        }
-        appRow.tap()
-        pause(1.2)
-        let hasKeyboardsRow = settingsRow(beginsWith("Keyboards"), timeout: 2, scrolling: false) != nil
-        note("PROBE app page in Settings has a Keyboards row: \(hasKeyboardsRow)")
-        dump("settings probe (Neural Key app page)", settings)
     }
 
     // MARK: - Keyboard
@@ -492,14 +439,6 @@ final class OnboardingWalkthroughTests: XCTestCase {
 
     private func labelContains(_ text: String) -> NSPredicate {
         NSPredicate(format: "label CONTAINS[c] %@", text)
-    }
-
-    private func beginsWith(_ text: String) -> NSPredicate {
-        NSPredicate(format: "label BEGINSWITH[c] %@", text)
-    }
-
-    private func exactly(_ text: String) -> NSPredicate {
-        NSPredicate(format: "label ==[c] %@", text)
     }
 
     private func waitForButton(_ title: String, timeout: TimeInterval) -> Bool {
