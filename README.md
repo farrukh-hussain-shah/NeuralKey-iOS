@@ -5,10 +5,11 @@ Native iOS app and custom keyboard extension for Neural Key AI Keyboard.
 **Status: Phase 1 (onboarding) implemented.** Home, Settings, Premium, Firebase and the AI
 keyboard toolbar are Phase 2.
 
-> **Verification status.** This code was written and syntax-checked on Linux, where Swift
-> for iOS cannot be compiled. It has **not** yet been built in Xcode or run on a device.
-> Expect to fix the occasional compiler complaint on first build, and run the device
-> checklist at the bottom before treating Phase 1 as done.
+> **Verification status.** Built and tested in the cloud (GitHub Actions, Xcode 26.6,
+> iPhone 17 Pro simulator on iOS 26.5): the app, keyboard extension and tests compile with
+> no errors or compiler warnings, 21 unit tests and 6 UI tests pass, and every onboarding
+> screen has been reviewed from Simulator screenshots. **Not yet tested on a real iPhone**:
+> the keyboard itself and the Full Access states need a device (TestFlight).
 
 ## Requirements
 

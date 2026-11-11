@@ -297,17 +297,19 @@ struct IntroHeroView: View {
 // MARK: - Completion
 
 struct SetupCompleteIllustration: View {
+    var logoSize: CGFloat = 112
+
     @State private var isVisible = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            NKLogoMark(size: 112)
+            NKLogoMark(size: logoSize)
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 34, weight: .bold))
+                .font(.system(size: logoSize * 0.3, weight: .bold))
                 .foregroundStyle(Color.white, NKColor.success)
                 .background(Circle().fill(NKColor.background).padding(3))
-                .offset(x: 10, y: 10)
+                .offset(x: logoSize * 0.09, y: logoSize * 0.09)
                 .scaleEffect(isVisible ? 1 : 0.4)
                 .opacity(isVisible ? 1 : 0)
         }

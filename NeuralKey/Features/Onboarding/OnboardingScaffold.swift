@@ -11,6 +11,8 @@ import SwiftUI
 enum OnboardingHeroSize {
     /// Default: roughly a third of the screen.
     case regular
+    /// For steps with a form or several rows under the illustration (switch-and-try).
+    case medium
     /// For copy-heavy steps (Full Access) so the whole explanation fits without scrolling
     /// on a standard iPhone.
     case compact
@@ -18,6 +20,7 @@ enum OnboardingHeroSize {
     func height(in available: CGFloat) -> CGFloat {
         switch self {
         case .regular: return min(max(available * 0.36, 170), 320)
+        case .medium: return min(max(available * 0.26, 180), 220)
         case .compact: return min(max(available * 0.16, 104), 140)
         }
     }
@@ -52,7 +55,7 @@ struct OnboardingScaffold<Hero: View, Content: View, Footer: View>: View {
                     .accessibilityHidden(true)
 
                 VStack(spacing: 0) {
-                    ScrollView(showsIndicators: false) {
+                    ScrollView {
                         content()
                             .padding(.horizontal, NKSpacing.l)
                             .padding(.top, NKSpacing.xl)
@@ -70,7 +73,7 @@ struct OnboardingScaffold<Hero: View, Content: View, Footer: View>: View {
                 .background(
                     TopRoundedRectangle()
                         .fill(NKColor.surface)
-                        .overlay(TopRoundedRectangle().stroke(NKColor.borderSubtle, lineWidth: 1))
+                        .overlay(TopRoundedOutline().stroke(NKColor.borderSubtle, lineWidth: 1))
                         .ignoresSafeArea(edges: .bottom)
                 )
             }

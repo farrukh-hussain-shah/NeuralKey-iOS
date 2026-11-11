@@ -144,7 +144,7 @@ private struct IntroPageView: View {
                     .background(
                         TopRoundedRectangle()
                             .fill(NKColor.surface)
-                            .overlay(TopRoundedRectangle().stroke(NKColor.borderSubtle, lineWidth: 1))
+                            .overlay(TopRoundedOutline().stroke(NKColor.borderSubtle, lineWidth: 1))
                     )
                 }
                 .frame(minHeight: proxy.size.height)

@@ -27,6 +27,7 @@ struct TryKeyboardStepView: View {
                     viewModel.showHelp()
                 }
             ),
+            heroSize: .medium,
             isHeroCollapsed: isFieldFocused,
             hero: {
                 KeyboardSwitcherIllustration()

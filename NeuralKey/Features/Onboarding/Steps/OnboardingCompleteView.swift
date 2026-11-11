@@ -9,8 +9,11 @@ struct OnboardingCompleteView: View {
 
     var body: some View {
         OnboardingScaffold(
+            // Compact so the whole summary, including "Good to know", is visible
+            // without scrolling on a standard iPhone.
+            heroSize: .compact,
             hero: {
-                SetupCompleteIllustration()
+                SetupCompleteIllustration(logoSize: 84)
             },
             content: {
                 VStack(spacing: NKSpacing.m) {

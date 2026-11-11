@@ -36,6 +36,31 @@ struct TopRoundedRectangle: Shape {
     }
 }
 
+/// The outline of a bottom sheet: both sides and the rounded top, with no bottom edge,
+/// so no line appears where the sheet meets the pinned actions underneath it.
+struct TopRoundedOutline: Shape {
+    var radius: CGFloat = NKRadius.sheet
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addArc(
+            tangent1End: CGPoint(x: rect.minX, y: rect.minY),
+            tangent2End: CGPoint(x: rect.minX + radius, y: rect.minY),
+            radius: radius
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addArc(
+            tangent1End: CGPoint(x: rect.maxX, y: rect.minY),
+            tangent2End: CGPoint(x: rect.maxX, y: rect.minY + radius),
+            radius: radius
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        return path
+    }
+}
+
 /// Hairline separator in the border colour.
 struct NKDivider: View {
     var body: some View {
