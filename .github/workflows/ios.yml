@@ -20,7 +20,7 @@ concurrency:
 jobs:
   build-and-test:
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Check out the code
@@ -103,61 +103,6 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/UnitTests.xcresult" \
             2>&1 | tee "$OUT_DIR/unit-tests.log"
 
-      - name: Record onboarding walkthrough video
-        id: video
-        if: always() && steps.build.outcome == 'success'
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          if [ ! -f NeuralKeyUITests/OnboardingWalkthroughTests.swift ]; then
-            echo "No walkthrough test in the repository; skipping the video."
-            exit 0
-          fi
-          xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$SIM_UDID" -b
-          # Python starts and stops the recorder so it reliably receives the stop signal
-          # and finishes writing the file.
-          python3 - <<'PY'
-          import os, signal, subprocess, sys, time
-
-          udid = os.environ["SIM_UDID"]
-          out_dir = os.environ["OUT_DIR"]
-          temp = os.environ["RUNNER_TEMP"]
-          video = os.path.join(out_dir, "onboarding-walkthrough.mp4")
-
-          recorder = subprocess.Popen(
-              ["xcrun", "simctl", "io", udid, "recordVideo", "--codec=h264", "--force", video]
-          )
-          time.sleep(3)
-
-          command = [
-              "xcodebuild", "test-without-building",
-              "-project", "NeuralKey.xcodeproj",
-              "-scheme", "NeuralKey",
-              "-destination", "platform=iOS Simulator,id=" + udid,
-              "-derivedDataPath", os.path.join(temp, "DerivedData"),
-              "-only-testing:NeuralKeyUITests/OnboardingWalkthroughTests",
-              "-parallel-testing-enabled", "NO",
-              "-resultBundlePath", os.path.join(temp, "Walkthrough.xcresult"),
-          ]
-          with open(os.path.join(out_dir, "walkthrough.log"), "w") as log:
-              test = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-              for line in test.stdout:
-                  sys.stdout.write(line)
-                  log.write(line)
-              code = test.wait()
-
-          time.sleep(1)
-          recorder.send_signal(signal.SIGINT)
-          try:
-              recorder.wait(timeout=90)
-          except subprocess.TimeoutExpired:
-              recorder.kill()
-
-          size = os.path.getsize(video) if os.path.exists(video) else 0
-          print("Video: %s (%d bytes)" % (video, size))
-          sys.exit(code)
-          PY
-
       - name: Run UI tests and capture onboarding screenshots
         id: ui
         if: always() && steps.build.outcome == 'success'
@@ -188,21 +133,229 @@ jobs:
           xcrun xcresulttool export attachments \
             --path "$RUNNER_TEMP/UITests.xcresult" \
             --output-path "$OUT_DIR/screenshots" || echo "Could not export attachments."
-          # Give the exported files the names the tests chose (01-intro-improve.png, ...).
+          # Keep the named screenshots (01-intro-improve.png, ...) and drop everything else,
+          # such as the automatic per-test screen recordings.
           python3 - "$OUT_DIR/screenshots" <<'PY' || true
           import json, os, re, sys
           folder = sys.argv[1]
           manifest = os.path.join(folder, "manifest.json")
+          keep = {"manifest.json"}
           if os.path.exists(manifest):
               for test in json.load(open(manifest)):
                   for item in test.get("attachments", []):
                       source = os.path.join(folder, item.get("exportedFileName", ""))
                       label = item.get("suggestedHumanReadableName") or ""
                       label = re.sub(r"_\d+_[0-9A-Fa-f-]{36}", "", label)
-                      if os.path.isfile(source) and label:
+                      if os.path.isfile(source) and re.match(r"^\d\d-.*\.png$", label):
                           os.replace(source, os.path.join(folder, label))
+                          keep.add(label)
+              for name in os.listdir(folder):
+                  if name not in keep:
+                      os.remove(os.path.join(folder, name))
           PY
           ls -la "$OUT_DIR/screenshots" || true
+
+      - name: Install video tools
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          command -v ffmpeg >/dev/null || brew install ffmpeg || true
+          command -v zstd >/dev/null || brew install zstd || true
+          command -v ffmpeg || echo "ffmpeg is unavailable: videos will be delivered as recorded."
+
+      - name: Write the walkthrough recorder script
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          cat > "$RUNNER_TEMP/record_walkthrough.py" <<'PY'
+          """Runs the end-to-end walkthrough UI test and produces a video of it.
+
+          Two ways of capturing are tried, one per invocation:
+            builtin   Xcode's own UI-test screen recording, taken from the result bundle.
+            external  `simctl io recordVideo`, started and stopped by markers the test prints,
+                      with Xcode's own capture switched off so the two do not compete.
+          Either way the result is re-encoded to a constant 30 fps MP4 that plays everywhere.
+          """
+          import glob, os, re, shutil, signal, subprocess, sys, threading, time
+
+          mode = sys.argv[1]
+          udid = os.environ["SIM_UDID"]
+          out_dir = os.environ["OUT_DIR"]
+          temp = os.environ["RUNNER_TEMP"]
+          project_dir = os.environ["PROJECT_DIR"]
+
+          if not os.path.exists(os.path.join(project_dir, "NeuralKeyUITests", "OnboardingWalkthroughTests.swift")):
+              print("No walkthrough test in the repository; skipping the video.")
+              sys.exit(0)
+
+          bundle_id = "com.neuralkey.aikeyboard"
+          try:
+              config = open(os.path.join(project_dir, "Config", "Shared.xcconfig")).read()
+              match = re.search(r"^APP_BUNDLE_ID\s*=\s*(\S+)", config, re.M)
+              if match:
+                  bundle_id = match.group(1)
+          except OSError:
+              pass
+
+          quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+          # Clean state: a fresh install has no saved onboarding progress and no keyboard
+          # enabled, so the video shows a genuine first run.
+          subprocess.run(["xcrun", "simctl", "boot", udid], **quiet)
+          subprocess.run(["xcrun", "simctl", "bootstatus", udid, "-b"])
+          subprocess.run(["xcrun", "simctl", "terminate", udid, "com.apple.Preferences"], **quiet)
+          subprocess.run(["xcrun", "simctl", "uninstall", udid, bundle_id], **quiet)
+          time.sleep(3)
+
+          scheme = "NeuralKey" if mode == "builtin" else "NeuralKeyNoCapture"
+          result = os.path.join(temp, "Walkthrough-%s.xcresult" % mode)
+          shutil.rmtree(result, ignore_errors=True)
+          start_file, end_file = "/tmp/nk_video_start", "/tmp/nk_video_end"
+          for path in (start_file, end_file):
+              if os.path.exists(path):
+                  os.remove(path)
+
+          command = [
+              "xcodebuild", "test-without-building",
+              "-project", "NeuralKey.xcodeproj",
+              "-scheme", scheme,
+              "-destination", "platform=iOS Simulator,id=" + udid,
+              "-derivedDataPath", os.path.join(temp, "DerivedData"),
+              "-only-testing:NeuralKeyUITests/OnboardingWalkthroughTests",
+              "-parallel-testing-enabled", "NO",
+              "-resultBundlePath", result,
+          ]
+          env = dict(os.environ)
+          if mode == "external":
+              env["TEST_RUNNER_NK_EXTERNAL_RECORDER"] = "1"
+
+          started, ended = threading.Event(), threading.Event()
+          notes = []
+          log_path = os.path.join(out_dir, "walkthrough-%s.log" % mode)
+          test = subprocess.Popen(command, cwd=project_dir, env=env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, errors="replace")
+
+          def pump():
+              with open(log_path, "w") as log:
+                  for line in test.stdout:
+                      sys.stdout.write(line)
+                      sys.stdout.flush()
+                      log.write(line)
+                      if "NK_VIDEO_START" in line:
+                          started.set()
+                      if "NK_VIDEO_END" in line:
+                          ended.set()
+                      if line.startswith("NK_NOTE "):
+                          notes.append(line.strip()[len("NK_NOTE "):])
+
+          thread = threading.Thread(target=pump, daemon=True)
+          thread.start()
+
+          raw = None
+          if mode == "external":
+              raw = os.path.join(temp, "walkthrough-external-raw.mp4")
+              recorder = None
+              while test.poll() is None:
+                  if recorder is None and (started.is_set() or os.path.exists(start_file)):
+                      recorder = subprocess.Popen(
+                          ["xcrun", "simctl", "io", udid, "recordVideo", "--codec=h264", "--force", raw])
+                      print("Recorder started")
+                  if recorder is not None and (ended.is_set() or os.path.exists(end_file)):
+                      break
+                  time.sleep(0.1)
+              if recorder is not None:
+                  time.sleep(0.7)
+                  recorder.send_signal(signal.SIGINT)
+                  try:
+                      recorder.wait(timeout=120)
+                  except subprocess.TimeoutExpired:
+                      recorder.kill()
+              else:
+                  print("The start marker was never seen; nothing was recorded.")
+
+          code = test.wait()
+          thread.join(timeout=20)
+
+          def is_video(data):
+              return len(data) > 12 and data[4:8] == b"ftyp"
+
+          if mode == "builtin":
+              attachments = os.path.join(temp, "walkthrough-attachments")
+              shutil.rmtree(attachments, ignore_errors=True)
+              os.makedirs(attachments)
+              subprocess.run(["xcrun", "xcresulttool", "export", "attachments",
+                              "--path", result, "--output-path", attachments])
+              manifest = os.path.join(attachments, "manifest.json")
+              if os.path.exists(manifest):
+                  shutil.copyfile(manifest, os.path.join(out_dir, "walkthrough-attachments-manifest.json"))
+              videos = [p for p in glob.glob(os.path.join(attachments, "*"))
+                        if os.path.splitext(p)[1].lower() in (".mp4", ".mov", ".m4v")]
+              print("Exported attachments:", sorted(os.listdir(attachments)))
+
+              if not videos:
+                  # Fall back to looking inside the result bundle, whose blobs are
+                  # zstd-compressed files.
+                  zstd = shutil.which("zstd")
+                  index = 0
+                  for root, _, files in os.walk(os.path.join(result, "Data")):
+                      for name in files:
+                          blob = os.path.join(root, name)
+                          if os.path.getsize(blob) < 200000:
+                              continue
+                          data = open(blob, "rb").read()
+                          if not is_video(data) and zstd:
+                              data = subprocess.run([zstd, "-dc", blob], stdout=subprocess.PIPE,
+                                                    stderr=subprocess.DEVNULL).stdout
+                          if is_video(data):
+                              index += 1
+                              target = os.path.join(attachments, "recording-%d.mp4" % index)
+                              open(target, "wb").write(data)
+                              videos.append(target)
+                  print("Videos found inside the result bundle:", len(videos))
+
+              if videos:
+                  raw = max(videos, key=os.path.getsize)
+
+          final_name = "onboarding-walkthrough.mp4" if mode == "builtin" else "onboarding-walkthrough-alt.mp4"
+          final = os.path.join(out_dir, final_name)
+          if raw and os.path.exists(raw) and os.path.getsize(raw) > 0:
+              ffmpeg = shutil.which("ffmpeg")
+              encoded = False
+              if ffmpeg:
+                  encoded = subprocess.run([
+                      ffmpeg, "-y", "-loglevel", "error", "-i", raw,
+                      "-vf", "fps=30,scale=-2:1600:flags=lanczos",
+                      "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                      "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", final,
+                  ]).returncode == 0
+              if not encoded:
+                  shutil.copyfile(raw, final)
+              print("Video written: %s (%d bytes, re-encoded: %s)" % (final, os.path.getsize(final), encoded))
+          else:
+              print("No video was produced in %s mode." % mode)
+
+          with open(os.path.join(out_dir, "walkthrough-%s-notes.txt" % mode), "w") as handle:
+              handle.write("\n".join(notes) + "\n")
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as handle:
+                  handle.write("\n### Walkthrough (%s capture)\n\n" % mode)
+                  handle.write("Video: %s\n\n" % ("yes" if os.path.exists(final) else "no"))
+                  for item in notes:
+                      handle.write("- %s\n" % item)
+          sys.exit(code)
+          PY
+
+      - name: Record walkthrough video (Xcode screen recording)
+        id: video
+        if: always() && steps.build.outcome == 'success'
+        continue-on-error: true
+        run: python3 "$RUNNER_TEMP/record_walkthrough.py" builtin
+
+      - name: Record walkthrough video (Simulator recorder)
+        id: video_alt
+        if: always() && steps.build.outcome == 'success'
+        continue-on-error: true
+        run: python3 "$RUNNER_TEMP/record_walkthrough.py" external
 
       - name: Summarise errors
         if: always()
@@ -214,10 +367,11 @@ jobs:
             echo "|------|--------|"
             echo "| Build | ${{ steps.build.outcome }} |"
             echo "| Unit tests | ${{ steps.unit.outcome }} |"
-            echo "| Walkthrough video | ${{ steps.video.outcome }} |"
             echo "| UI tests and screenshots | ${{ steps.ui.outcome }} |"
+            echo "| Walkthrough video | ${{ steps.video.outcome }} |"
+            echo "| Walkthrough video (alternative capture) | ${{ steps.video_alt.outcome }} |"
             echo ""
-            for LOG in build unit-tests walkthrough ui-tests; do
+            for LOG in build unit-tests ui-tests walkthrough-builtin walkthrough-external; do
               FILE="$OUT_DIR/$LOG.log"
               [ -f "$FILE" ] || continue
               PROBLEMS=$(grep -E "error:|\*\* .* FAILED \*\*|Test Case .* failed|: error -" "$FILE" | sort -u | head -n 80 || true)
