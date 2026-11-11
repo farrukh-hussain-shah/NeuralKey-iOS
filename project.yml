@@ -1,0 +1,80 @@
+# Neural Key iOS — XcodeGen project spec.
+# Generate the Xcode project with:  brew install xcodegen && xcodegen generate
+name: NeuralKey
+
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+configFiles:
+  Debug: Config/Shared.xcconfig
+  Release: Config/Shared.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: NO
+
+targets:
+  NeuralKey:
+    type: application
+    platform: iOS
+    sources:
+      - path: NeuralKey
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
+        PRODUCT_NAME: NeuralKey
+        INFOPLIST_FILE: Config/NeuralKey-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Config/NeuralKey.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    dependencies:
+      - target: NeuralKeyKeyboard
+
+  NeuralKeyKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NeuralKeyKeyboard
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(KEYBOARD_BUNDLE_ID)
+        PRODUCT_NAME: NeuralKeyKeyboard
+        INFOPLIST_FILE: Config/NeuralKeyKeyboard-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Config/NeuralKeyKeyboard.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  NeuralKeyTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: NeuralKeyTests
+    dependencies:
+      - target: NeuralKey
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  NeuralKey:
+    build:
+      targets:
+        NeuralKey: all
+        NeuralKeyTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - NeuralKeyTests
+    archive:
+      config: Release

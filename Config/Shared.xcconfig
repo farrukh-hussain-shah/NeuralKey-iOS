@@ -1,0 +1,14 @@
+// Neural Key — single source of truth for identifiers.
+// CONFIRM WITH THE TEAM before the first archive: the iOS bundle ID below mirrors the
+// Android package name, which is an assumption. Changing these three lines is all
+// that is needed; the code reads them from Info.plist at runtime.
+
+APP_BUNDLE_ID = com.neuralkey.aikeyboard
+KEYBOARD_BUNDLE_ID = $(APP_BUNDLE_ID).keyboard
+APP_GROUP_ID = group.$(APP_BUNDLE_ID)
+
+// Your Apple Developer Team ID (10 characters), e.g. ABCDE12345
+DEVELOPMENT_TEAM =
+
+MARKETING_VERSION = 1.0.0
+CURRENT_PROJECT_VERSION = 1
