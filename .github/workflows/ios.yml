@@ -1,4 +1,4 @@
-# Neural Key iOS — build, unit tests and onboarding screenshots on a GitHub-hosted Mac.
+# Neural Key iOS — build, unit tests, onboarding video and screenshots on a GitHub-hosted Mac.
 #
 # This file must live at the TOP of the repository:  .github/workflows/ios.yml
 # It finds project.yml wherever it is, so the Xcode project may sit in a subfolder.
@@ -103,6 +103,61 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/UnitTests.xcresult" \
             2>&1 | tee "$OUT_DIR/unit-tests.log"
 
+      - name: Record onboarding walkthrough video
+        id: video
+        if: always() && steps.build.outcome == 'success'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ ! -f NeuralKeyUITests/OnboardingWalkthroughTests.swift ]; then
+            echo "No walkthrough test in the repository; skipping the video."
+            exit 0
+          fi
+          xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          # Python starts and stops the recorder so it reliably receives the stop signal
+          # and finishes writing the file.
+          python3 - <<'PY'
+          import os, signal, subprocess, sys, time
+
+          udid = os.environ["SIM_UDID"]
+          out_dir = os.environ["OUT_DIR"]
+          temp = os.environ["RUNNER_TEMP"]
+          video = os.path.join(out_dir, "onboarding-walkthrough.mp4")
+
+          recorder = subprocess.Popen(
+              ["xcrun", "simctl", "io", udid, "recordVideo", "--codec=h264", "--force", video]
+          )
+          time.sleep(3)
+
+          command = [
+              "xcodebuild", "test-without-building",
+              "-project", "NeuralKey.xcodeproj",
+              "-scheme", "NeuralKey",
+              "-destination", "platform=iOS Simulator,id=" + udid,
+              "-derivedDataPath", os.path.join(temp, "DerivedData"),
+              "-only-testing:NeuralKeyUITests/OnboardingWalkthroughTests",
+              "-parallel-testing-enabled", "NO",
+              "-resultBundlePath", os.path.join(temp, "Walkthrough.xcresult"),
+          ]
+          with open(os.path.join(out_dir, "walkthrough.log"), "w") as log:
+              test = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              for line in test.stdout:
+                  sys.stdout.write(line)
+                  log.write(line)
+              code = test.wait()
+
+          time.sleep(1)
+          recorder.send_signal(signal.SIGINT)
+          try:
+              recorder.wait(timeout=90)
+          except subprocess.TimeoutExpired:
+              recorder.kill()
+
+          size = os.path.getsize(video) if os.path.exists(video) else 0
+          print("Video: %s (%d bytes)" % (video, size))
+          sys.exit(code)
+          PY
+
       - name: Run UI tests and capture onboarding screenshots
         id: ui
         if: always() && steps.build.outcome == 'success'
@@ -118,7 +173,8 @@ jobs:
             -scheme NeuralKey \
             -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            -only-testing:NeuralKeyUITests \
+            -only-testing:NeuralKeyUITests/OnboardingScreenshotTests \
+            -parallel-testing-enabled NO \
             -resultBundlePath "$RUNNER_TEMP/UITests.xcresult" \
             2>&1 | tee "$OUT_DIR/ui-tests.log"
 
@@ -158,9 +214,10 @@ jobs:
             echo "|------|--------|"
             echo "| Build | ${{ steps.build.outcome }} |"
             echo "| Unit tests | ${{ steps.unit.outcome }} |"
+            echo "| Walkthrough video | ${{ steps.video.outcome }} |"
             echo "| UI tests and screenshots | ${{ steps.ui.outcome }} |"
             echo ""
-            for LOG in build unit-tests ui-tests; do
+            for LOG in build unit-tests walkthrough ui-tests; do
               FILE="$OUT_DIR/$LOG.log"
               [ -f "$FILE" ] || continue
               PROBLEMS=$(grep -E "error:|\*\* .* FAILED \*\*|Test Case .* failed|: error -" "$FILE" | sort -u | head -n 80 || true)
