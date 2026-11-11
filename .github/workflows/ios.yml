@@ -315,6 +315,36 @@ jobs:
               if videos:
                   raw = max(videos, key=os.path.getsize)
 
+          def marker_time(name):
+              with open(log_path, errors="replace") as handle:
+                  for line in handle:
+                      found = re.search(r"t =\s*([\d.]+)s " + name, line)
+                      if found:
+                          return float(found.group(1))
+              return None
+
+          # Xcode's recording covers the whole test, including the warm-up before the
+          # NK_VIDEO_START marker. Cut it down to the part between the two markers.
+          trim = []
+          if mode == "builtin" and raw and shutil.which("ffprobe"):
+              start_t, end_t = marker_time("NK_VIDEO_START"), marker_time("NK_VIDEO_END")
+              with open(log_path, errors="replace") as handle:
+                  passed = re.search(r"testFullSetupWalkthrough\]' \w+ \(([\d.]+) seconds\)", handle.read())
+              probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                      "-of", "csv=p=0", raw], stdout=subprocess.PIPE, text=True).stdout.strip()
+              try:
+                  length = float(probe)
+              except ValueError:
+                  length = None
+              if start_t is not None and length:
+                  # The recording starts a few seconds into the test; estimate by how much.
+                  lead = max(0.0, float(passed.group(1)) - length) if passed else 0.0
+                  begin = max(0.0, start_t - lead - 0.3)
+                  trim = ["-ss", "%.2f" % begin]
+                  if end_t is not None and end_t - lead + 0.7 > begin + 5:
+                      trim += ["-to", "%.2f" % (end_t - lead + 0.7)]
+                  print("Trimming Xcode recording:", trim, "(test %s s, video %.1f s)" % (passed.group(1) if passed else "?", length))
+
           final_name = "onboarding-walkthrough.mp4" if mode == "builtin" else "onboarding-walkthrough-alt.mp4"
           final = os.path.join(out_dir, final_name)
           if raw and os.path.exists(raw) and os.path.getsize(raw) > 0:
@@ -322,7 +352,7 @@ jobs:
               encoded = False
               if ffmpeg:
                   encoded = subprocess.run([
-                      ffmpeg, "-y", "-loglevel", "error", "-i", raw,
+                      ffmpeg, "-y", "-loglevel", "error", "-i", raw] + trim + [
                       "-vf", "fps=30,scale=-2:1600:flags=lanczos",
                       "-c:v", "libx264", "-preset", "medium", "-crf", "20",
                       "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", final,
