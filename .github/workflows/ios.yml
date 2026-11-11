@@ -1,0 +1,185 @@
+# Neural Key iOS — build, unit tests and onboarding screenshots on a GitHub-hosted Mac.
+#
+# This file must live at the TOP of the repository:  .github/workflows/ios.yml
+# It finds project.yml wherever it is, so the Xcode project may sit in a subfolder.
+#
+# Nothing here needs an Apple account: it builds for the iOS Simulator only.
+
+name: iOS build and test
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Locate the project
+        run: |
+          SPEC=$(find . -name project.yml -not -path './.git/*' | head -n 1)
+          if [ -z "$SPEC" ]; then
+            echo "::error::project.yml was not found anywhere in the repository."
+            exit 1
+          fi
+          PROJECT_DIR=$(cd "$(dirname "$SPEC")" && pwd)
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "OUT_DIR=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/out/screenshots"
+          echo "Project folder: $PROJECT_DIR"
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: xcodegen generate
+
+      - name: Pick an iPhone simulator
+        run: |
+          xcrun simctl list devices available --json > "$RUNNER_TEMP/devices.json"
+          SIM=$(python3 - "$RUNNER_TEMP/devices.json" <<'PY'
+          import json, re, sys
+          devices = json.load(open(sys.argv[1]))["devices"]
+          best = None
+          for runtime, entries in devices.items():
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              if not match:
+                  continue
+              version = (int(match.group(1)), int(match.group(2)))
+              for entry in entries:
+                  name = entry.get("name", "")
+                  if name.startswith("iPhone") and "SE" not in name:
+                      if best is None or version > best[0]:
+                          best = (version, entry["udid"], name)
+                      break
+          print("%s|%s|%d.%d" % (best[1], best[2], best[0][0], best[0][1]) if best else "")
+          PY
+          )
+          if [ -z "$SIM" ]; then
+            echo "::error::No iPhone simulator is available on this runner."
+            exit 1
+          fi
+          echo "SIM_UDID=${SIM%%|*}" >> "$GITHUB_ENV"
+          echo "Simulator: $SIM"
+
+      - name: Build app, keyboard extension and tests
+        id: build
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project NeuralKey.xcodeproj \
+            -scheme NeuralKey \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            2>&1 | tee "$OUT_DIR/build.log"
+
+      - name: Run unit tests
+        id: unit
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project NeuralKey.xcodeproj \
+            -scheme NeuralKey \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -only-testing:NeuralKeyTests \
+            -resultBundlePath "$RUNNER_TEMP/UnitTests.xcresult" \
+            2>&1 | tee "$OUT_DIR/unit-tests.log"
+
+      - name: Run UI tests and capture onboarding screenshots
+        id: ui
+        if: always() && steps.build.outcome == 'success'
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ ! -d NeuralKeyUITests ]; then
+            echo "No NeuralKeyUITests folder in the repository; skipping screenshots."
+            exit 0
+          fi
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project NeuralKey.xcodeproj \
+            -scheme NeuralKey \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -only-testing:NeuralKeyUITests \
+            -resultBundlePath "$RUNNER_TEMP/UITests.xcresult" \
+            2>&1 | tee "$OUT_DIR/ui-tests.log"
+
+      - name: Export screenshots
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          if [ ! -d "$RUNNER_TEMP/UITests.xcresult" ]; then
+            echo "No UI test results to export."
+            exit 0
+          fi
+          xcrun xcresulttool export attachments \
+            --path "$RUNNER_TEMP/UITests.xcresult" \
+            --output-path "$OUT_DIR/screenshots" || echo "Could not export attachments."
+          # Give the exported files the names the tests chose (01-intro-improve.png, ...).
+          python3 - "$OUT_DIR/screenshots" <<'PY' || true
+          import json, os, re, sys
+          folder = sys.argv[1]
+          manifest = os.path.join(folder, "manifest.json")
+          if os.path.exists(manifest):
+              for test in json.load(open(manifest)):
+                  for item in test.get("attachments", []):
+                      source = os.path.join(folder, item.get("exportedFileName", ""))
+                      label = item.get("suggestedHumanReadableName") or ""
+                      label = re.sub(r"_\d+_[0-9A-Fa-f-]{36}", "", label)
+                      if os.path.isfile(source) and label:
+                          os.replace(source, os.path.join(folder, label))
+          PY
+          ls -la "$OUT_DIR/screenshots" || true
+
+      - name: Summarise errors
+        if: always()
+        run: |
+          {
+            echo "## Neural Key iOS build"
+            echo ""
+            echo "| Step | Result |"
+            echo "|------|--------|"
+            echo "| Build | ${{ steps.build.outcome }} |"
+            echo "| Unit tests | ${{ steps.unit.outcome }} |"
+            echo "| UI tests and screenshots | ${{ steps.ui.outcome }} |"
+            echo ""
+            for LOG in build unit-tests ui-tests; do
+              FILE="$OUT_DIR/$LOG.log"
+              [ -f "$FILE" ] || continue
+              PROBLEMS=$(grep -E "error:|\*\* .* FAILED \*\*|Test Case .* failed|: error -" "$FILE" | sort -u | head -n 80 || true)
+              if [ -n "$PROBLEMS" ]; then
+                echo "### Problems in $LOG.log"
+                echo ""
+                echo '```'
+                echo "$PROBLEMS"
+                echo '```'
+                echo ""
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neural-key-ios-results
+          path: ${{ env.OUT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
