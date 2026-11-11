@@ -88,8 +88,25 @@ schemes:
       config: Debug
     test:
       config: Debug
+      # Keep Xcode's automatic UI-test screen recordings even when tests pass; the CI
+      # workflow turns the walkthrough's recording into the demo video.
+      captureScreenshotsAutomatically: true
+      deleteScreenshotsWhenEachTestSucceeds: false
+      preferredScreenCaptureFormat: screenRecording
       targets:
         - NeuralKeyTests
         - NeuralKeyUITests
     archive:
       config: Release
+
+  # Same UI tests with Xcode's automatic capture off, for use with an external recorder.
+  NeuralKeyNoCapture:
+    build:
+      targets:
+        NeuralKey: all
+        NeuralKeyUITests: [test]
+    test:
+      config: Debug
+      captureScreenshotsAutomatically: false
+      targets:
+        - NeuralKeyUITests
