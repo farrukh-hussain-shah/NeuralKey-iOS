@@ -64,17 +64,32 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).tests
         GENERATE_INFOPLIST_FILE: YES
 
+  # Drives the app in the Simulator and saves a screenshot of every onboarding screen.
+  NeuralKeyUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: NeuralKeyUITests
+    dependencies:
+      - target: NeuralKey
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).uitests
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   NeuralKey:
     build:
       targets:
         NeuralKey: all
         NeuralKeyTests: [test]
+        NeuralKeyUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - NeuralKeyTests
+        - NeuralKeyUITests
     archive:
       config: Release

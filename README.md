@@ -35,6 +35,19 @@ keyboard toolbar are Phase 2.
 
 The `.xcodeproj` is generated and git-ignored; `project.yml` is the source of truth.
 
+### No Mac? Build in the cloud
+
+`.github/workflows/ios.yml` builds the app on a GitHub-hosted Mac on every push: it
+generates the project, compiles app + keyboard + tests, runs the unit tests, then runs
+`NeuralKeyUITests` to capture a screenshot of each onboarding screen in the Simulator.
+Logs and screenshots are attached to the run as the `neural-key-ios-results` artifact.
+
+The `.github` folder must be at the top level of the repository. The workflow needs no
+Apple account. It cannot test the keyboard on a real phone or the Full Access states;
+those need TestFlight and a paid Apple Developer membership.
+
+(Google Cloud Build cannot build iOS apps: it has no macOS machines.)
+
 ### Optional: brand font
 
 The designs use **Space Grotesk**. Add the static TTFs (Regular, Medium, SemiBold, Bold)
@@ -60,6 +73,8 @@ NeuralKey/              App target (SwiftUI)
     Home/               TEMPORARY placeholder until Phase 2
 NeuralKeyKeyboard/      Keyboard extension target (UIKit, UIInputViewController)
 NeuralKeyTests/         Unit tests for flow rules, detection, shared state, view model
+NeuralKeyUITests/       Simulator walkthrough that captures onboarding screenshots
+.github/workflows/      Cloud build on a GitHub-hosted Mac
 ```
 
 ## Onboarding flow
